@@ -1,44 +1,40 @@
-%@@TODO: Implement biases, and the training thereof
 %@@TODO: Output weights over coarse digitization instead of single number?
-%@@TODO: Does normalizing help? Have implemented it for now.
+%@@TODO: Check if normalizing the song actually helps meaningfully.
+%@@TODO: Test batch vs online updating. Note that online is going to
+%        require randomly picking from among training examples to avoid
+%        biasing the results by always feeding in early examples first.
 
 clear all
 close all
 
 % Set parameters
-compressionFactor = 4; % Retain 1/cF of the song data
+compressionFactor = 2; % Retain 1/cF of the song data
 secondsBack = 10; % Length of time to be used as input
-learnRate = 0.1; % Smaller = slower adjustment of weights
+learnRate = 0.001; % Smaller = slower adjustment of weights
 trainFrac = 0.8; % Portion of data to be devoted to training set
-trainingCycles = 1000; % # of times training data is run through 
-                    % Currently arbitrary - find by looking at error trace
-errTrace = zeros(1,trainingCycles); %To store error on validataion set over time
-spacingFactor = 1000;
+trainingCycles = 100; % # of times training data is run through 
+    % Currently arbitrary - find optimal number by looking at error trace
+errTrace = zeros(1,trainingCycles); % Store error on validataion set
+spacingFactor = 100; % Space between datapoints used for training
 
-%First grab the song
+% First grab the song. Location will vary for your computer, obvs.
+% I *think* audioread assumes an nx2 mp3 format...?
 [song,Fs] = audioread('C:\Users\Oli\Downloads\Simple Gifts.mp3');
+
 % Make it one-channel
 song = mean(song,2);
 
 % 'Simple Gitfts' has a chunk in front of zeros, discard them
 song = song(576:end);
 
-%Compress by picking out every (compressionFactor)-th data point
+% Lossy compression by picking out every (compressionFactor)-th data point
 song = song(1:compressionFactor:end);
 Fs = Fs/compressionFactor;
-
-% Normalize the song on (-1,1)
-maxSong = max(song);
-minSong = min(song);
-
-song = 2*(song-minSong)/(maxSong-minSong)-1;
 
 % sound(song,Fs)
 % clear sound
 disp('Song Obtained')
 %%
-%Random initial weights on (-1,1)
-%
 % Given a number of seconds to be used for input,
 % find the length of the input vector whose components will hop backward a
 % number of datapoints equal to a power of two, in a number of hops equal
@@ -61,31 +57,37 @@ while (x(end) < Fs*secondsBack)
 end
 
 layers = ceil(log2(inputLength));
-
-weights{1} = 2*rand(round(inputLength/2),inputLength)-1;
-biases{1} = 2*rand(ceil(length(x)/2),1)-1;
+%%
+%Random initial weights on (-valueMax,valueMax)
+valueMax = 1;
+weights{1} = 2*valueMax*rand(round(inputLength/2),inputLength)-valueMax;
+biases{1} = 2*valueMax*rand(ceil(length(x)/2),1)-valueMax;
 tempWeights{1} = weights{1}*0;
 tempBiases{1} = biases{1}*0;
 for index = 2:layers
-    weights{index} = 2*(rand(ceil(length(weights{index-1}(:,1))/2),ceil(length(weights{index-1}(1,:))/2)))-1;
+    weights{index} = 2*valueMax*(rand(ceil(length(weights{index-1}(:,1))/2),ceil(length(weights{index-1}(1,:))/2)))-valueMax;
     tempWeights{index} = weights{index}*0;
     
-    biases{index} = 2*(rand(ceil(length(biases{index-1})/2),1))-1;
+    biases{index} = 2*valueMax*(rand(ceil(length(biases{index-1})/2),1))-valueMax;
     tempBiases{index} = biases{index}*0;
 end
 disp('Initialized Weights and Biases')
+
 %%
+
 % Create an example song w/ the random weights
 % Choose random chunk of song as a seed.
+
+close all
 disp('Producing Random Song')
+numNewSounds = x(end); % How many audi datapoints to generate
 m = randi([x(end) + 1, length(song)]);
-randSong = song(m-x(end) : m);
- 
-newSong = randSong; %This will be used to compare outputs later
-for index = 1:x(end)*3 %how many song datapoints to generate
+newSong = repmat([song(m-x(end) : m) ; nan(numNewSounds,1)],1,trainingCycles+1);
+
+for index = 1:numNewSounds
     newPoint = nan(inputLength,1);
     for subindex = 1:inputLength
-        newPoint(inputLength-subindex+1) = randSong(end - x(subindex));
+        newPoint(inputLength-subindex+1) = newSong(x(end)+1+index - x(subindex));
     end
     
     for subindex = 1:layers
@@ -93,8 +95,12 @@ for index = 1:x(end)*3 %how many song datapoints to generate
         newPoint = 2./(1+exp(-1*newPoint))-1;
     end
     
-    randSong(length(randSong)+1) = newPoint;
+    newSong(x(end)+1+index,1) = newPoint;
 end
+figure
+imagesc(newSong)
+figure
+plot(newSong(:,1))
 
 %%
 % Split data into training and validation datasets
@@ -137,159 +143,146 @@ end
 
 %%
 % Actually apply the data
-for cycle = 1:trainingCycles    
+for cycle = 1:trainingCycles
     % First check the error produced by the current weights on validData
     validErr = 0;
-    for index = 1:length(validAns)
-        newPoint = nan(inputLength,1);
-        for subindex = 1:inputLength
-            newPoint(inputLength-subindex+1) = validData(end - subindex + 1,index);
-        end
+    for example = 1:length(validAns)
+        newPoint = validData(:,example);
         for subindex = 1:layers
            newPoint = weights{subindex}*newPoint + biases{subindex};
            newPoint = 2./(1+exp(-1*newPoint))-1;
         end
-        validErr = validErr + (validAns(index)-newPoint)^2;
-    end    
-    errTrace(cycle) = validErr/length(validAns);
-    plot(errTrace)
-    title('Validation Error'),drawnow
-    
-    %See how bad the current weights do on the training set
-    trainErr = 0;
-    for index = 1:length(trainAns)
-        newPoint = nan(inputLength,1);
-        for subindex = 1:inputLength
-            newPoint(inputLength-subindex+1) = trainData(end - subindex + 1);
-        end
-        for subindex = 1:layers
-           newPoint = weights{subindex}*newPoint + biases{subindex};
-           newPoint = 2./(1+exp(-1*newPoint))-1;
-        end
-        trainErr = trainErr + (trainAns(index)-newPoint)^2;
+        validErr = validErr + (validAns(example)-newPoint)^2;
     end
+    errTrace(cycle) = validErr/length(validAns);
+    figure(10)
+    plot(errTrace)
+    title('Mean Validation Error'),drawnow
     
     % Record the direction each weight and bias needs to move according to
     % each training example
-    for layer = 1:layers
-        for n = 1:length(biases{layer})
-            biases{layer}(n) = biases{layer}(n)+learnRate;
-            % Re-do the whole error calculation
-            trainErrTemp = 0;
-            for index = 1:length(trainAns)
-                newPoint = nan(inputLength,1);
-                for subindex = 1:inputLength
-                    newPoint(inputLength-subindex+1) = trainData(end - subindex + 1);
-                end
-                for subindex = 1:layers
-                   newPoint = weights{subindex}*newPoint + biases{subindex};
-                   newPoint = 2./(1+exp(-1*newPoint))-1;
-                end
-                trainErrTemp = trainErrTemp + (trainAns(index)-newPoint)^2;
-            end
-            if trainErrTemp < trainErr
-                tempBiases{layer}(n) = tempBiases{layer}(n)+1;
-            end
-            % Repeat for reducing that bias
-            biases{layer}(n) = biases{layer}(n)-2*learnRate;
-            % Re-do the whole error calculation
-            trainErrTemp = 0;
-            for index = 1:length(trainAns)
-                newPoint = nan(inputLength,1);
-                for subindex = 1:inputLength
-                    newPoint(inputLength-subindex+1) = trainData(end - subindex + 1);
-                end
-                for subindex = 1:layers
-                   newPoint = weights{subindex}*newPoint + biases{subindex};
-                   newPoint = 2./(1+exp(-1*newPoint))-1;
-                end
-                trainErrTemp = trainErrTemp + (trainAns(index)-newPoint)^2;
-            end
-            if trainErrTemp < trainErr
-                tempBiases{layer}(n) = tempBiases{layer}(n)-1;
-            end
-            % Reset the bias; + -- + => 0
-            biases{layer}(n) = biases{layer}(n)+learnRate;
+    for example = 1:length(trainAns)
+        if mod(example,10) == 0
+            disp(strcat(strcat('Training:`',num2str(cycle - 1 + example/length(trainAns))),strcat('/',num2str(trainingCycles))))
         end
-        for col = 1:length(weights{layer}(1,:))
-            for row = 1:length(weights{layer}(:,1))
-                % Check if increasing reduces error
-                weights{layer}(row,col) = weights{layer}(row,col)+learnRate;
-                % Re-do the whole error calculation
-                trainErrTemp = 0;
-                for index = 1:length(trainAns)
-                    newPoint = nan(inputLength,1);
-                    for subindex = 1:inputLength
-                        newPoint(inputLength-subindex+1) = trainData(end - subindex + 1);
-                    end
-                    for subindex = 1:layers
-                       newPoint = weights{subindex}*newPoint + biases{subindex};
-                       newPoint = 2./(1+exp(-1*newPoint))-1;
-                    end
-                    trainErrTemp = trainErrTemp + (trainAns(index)-newPoint)^2;
+        % check original error
+        newPoint = trainData(:,example);
+        for subindex = 1:layers
+           newPoint = weights{subindex}*newPoint + biases{subindex};
+           newPoint = 2./(1+exp(-1*newPoint))-1;
+        end
+        err0 = (trainAns(example)-newPoint)^2;
+        
+        for layer = 1:layers
+            for n = 1:length(biases{layer})
+                biases{layer}(n) = biases{layer}(n)+learnRate;
+                % Check error moving up and down in a small step
+                newPoint = trainData(:,example);
+                for subindex = 1:layers
+                   newPoint = weights{subindex}*newPoint + biases{subindex};
+                   newPoint = 2./(1+exp(-1*newPoint))-1;
                 end
-                if trainErrTemp < trainErr
-                    tempWeights{layer}(row,col) = tempWeights{layer}(row,col)+1;
+                errU = (trainAns(example)-newPoint)^2;
+                
+                biases{layer}(n) = biases{layer}(n)-2*learnRate;
+                newPoint = trainData(:,example);
+                for subindex = 1:layers
+                   newPoint = weights{subindex}*newPoint + biases{subindex};
+                   newPoint = 2./(1+exp(-1*newPoint))-1;
                 end
-                % Check if reducing reduces error
-                weights{layer}(row,col) = weights{layer}(row,col)-2*learnRate;
-                % Re-do the whole error calculation
-                trainErrTemp = 0;
-                for index = 1:length(trainAns)
-                    newPoint = nan(inputLength,1);
-                    for subindex = 1:inputLength
-                        newPoint(inputLength-subindex+1) = trainData(end - subindex + 1);
-                    end
-                    for subindex = 1:layers
-                       newPoint = weights{subindex}*newPoint + biases{subindex};
-                       newPoint = 2./(1+exp(-1*newPoint))-1;
-                    end
-                    trainErrTemp = trainErrTemp + (trainAns(index)-newPoint)^2;
+                errD = (trainAns(example)-newPoint)^2;
+                
+                [temp,location] = min([err0,errU,errD]);
+                switch location
+                case 1
+                    break
+                case 2
+                    tempBiases{layer}(n) = tempBiases{layer}(n)+1;
+                case 3
+                    tempBiases{layer}(n) = tempBiases{layer}(n)-1;
+                otherwise
+                    disp('Something is very wrong!')
+                    pause(10000)
+                    break
                 end
-                if trainErrTemp < trainErr
-                    tempWeights{layer}(row,col) = tempWeights{layer}(row,col)-1;
-                end
-                % Reset the weight
-                weights{layer}(row,col) = weights{layer}(row,col)+learnRate;
-                end     
+                % Reset the bias (+ -- + => 0)
+                biases{layer}(n) = biases{layer}(n)+learnRate;
             end
-    end
+            for col = 1:size(weights{layer},2)
+                for row = 1:size(weights{layer},1)
+                    weights{layer}(row,col) = weights{layer}(row,col)+learnRate;
+                    newPoint = trainData(:,example);
+                    for subindex = 1:layers
+                       newPoint = weights{subindex}*newPoint + biases{subindex};
+                       newPoint = 2./(1+exp(-1*newPoint))-1;
+                    end
+                    errU = (trainAns(example)-newPoint)^2;
 
-    % Finally, update the weights and biases
+                    weights{layer}(row,col) = weights{layer}(row,col)-2*learnRate;
+                    newPoint = trainData(:,example);
+                    for subindex = 1:layers
+                       newPoint = weights{subindex}*newPoint + biases{subindex};
+                       newPoint = 2./(1+exp(-1*newPoint))-1;
+                    end
+                    errD = (trainAns(example)-newPoint)^2;
+
+                    % Reset the weight                
+                    weights{layer}(row,col) = weights{layer}(row,col)+learnRate;
+
+                    [temp,location] = min([err0,errU,errD]);
+                    switch location
+                        case 1
+                            break
+                        case 2
+                            tempWeights{layer}(row,col) = tempWeights{layer}(row,col)+1;
+                        case 3
+                            tempWeights{layer}(row,col) = tempWeights{layer}(row,col)-1;
+                        otherwise
+                            disp('Something is very wrong!')
+                            pause(10000)
+                            break
+                    end
+                end
+            end  
+        end
+    end
+    
+    % Update the weights and biases
     % *Hopefully* this leads to less error.
     for layer = 1:layers
         % Multiply tempWeights by the learning rate, and divide it by the
         % number of training examples to average out the impact of each
-        weights{layer} = weights{layer} + tempWeights{layer}*learnRate;%/length(trainAns);
+        weights{layer} = weights{layer} + tempWeights{layer}*learnRate/length(trainAns);
         % Reset tempWeights for next cycle
         tempWeights{layer} = tempWeights{layer}*0;
         
-        biases{layer} = biases{layer} + tempBiases{layer}*learnRate;%/length(trainAns);
+        biases{layer} = biases{layer} + tempBiases{layer}*learnRate/length(trainAns);
         tempBiases{layer} = tempBiases{layer}*0;
     end
-    disp(strcat('Training Progress:`',num2str(cycle/trainingCycles)))
+    
+    % Create a new song based on the new weights and biases, with the same
+    % seed as the initial random song.
+    for index = 1:numNewSounds
+        newPoint = nan(inputLength,1);
+        for subindex = 1:inputLength
+            newPoint(inputLength-subindex+1) = newSong(x(end)+1+index - x(subindex));
+        end
+
+        for subindex = 1:layers
+            newPoint = weights{subindex}*newPoint + biases{subindex};
+            newPoint = 2./(1+exp(-1*newPoint))-1;
+        end
+
+        newSong(x(end)+1+index,cycle+1) = newPoint;
+    end
 end
 
 %% % Now compare the generated songs after training
-newPoint = nan(inputLength,1);
-for index = 1:x(end)*3 %how many song datapoints to generate
-    newPoint = nan(inputLength,1);
-    for subindex = 1:inputLength
-        newPoint(inputLength-subindex+1) = newSong(end - x(subindex));
-    end
-    
-    for subindex = 1:layers
-        newPoint = weights{subindex}*newPoint + biases{subindex};
-        newPoint = 2./(1+exp(-1*newPoint))-1;
-    end
-    
-    newSong(length(newSong)+1) = newPoint;
-end
 
 figure
-subplot(2,1,1)
-plot(randSong)
-subplot(2,1,2)
-plot(newSong)
-
-% sound((newSong(x(end):end)), Fs)
+imagesc(newSong)
+figure
+for plt = 1:trainingCycles+1
+    subplot(1,trainingCycles+1,plt)
+    plot(newSong(:,plt))
+end
